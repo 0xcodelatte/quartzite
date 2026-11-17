@@ -108,6 +108,7 @@ fn render_frame(state: &mut State) {
         }
     }
 
-    state.redraw_needed = false;
+    // Keep drawing while animations run; each redraw waits for vsync.
+    state.redraw_needed = state.render_state.animating;
     state.post_render(&output);
 }

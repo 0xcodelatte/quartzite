@@ -9,16 +9,20 @@ use smithay::{
     desktop::{Space, Window},
     output::Output,
     reexports::wayland_server::protocol::wl_surface::WlSurface,
-    utils::{Logical, Point, Rectangle},
+    utils::{IsAlive, Logical, Point, Rectangle},
 };
+
+use crate::animation::Spring;
 
 pub struct Workspace {
     pub space: Space<Window>,
+    /// Minimized windows are unmapped from the space but kept alive.
+    pub minimized: Vec<Window>,
 }
 
 impl Workspace {
     fn new() -> Self {
-        Self { space: Space::default() }
+        Self { space: Space::default(), minimized: Vec::new() }
     }
 }
 
@@ -65,6 +69,10 @@ impl Layout {
         self.active().space.output_geometry(output)
     }
 
+    pub fn primary_scale(&self) -> f64 {
+        self.outputs.first().map(|o| o.current_scale().fractional_scale()).unwrap_or(1.0)
+    }
+
     /// Area windows may occupy on the primary output.
     pub fn usable_area(&self) -> Rectangle<i32, Logical> {
         self.primary_output_geometry()
@@ -84,19 +92,47 @@ impl Layout {
         self.active_mut().space.map_element(window, loc, true);
     }
 
-    /// Find which workspace a toplevel lives on.
+    /// Find which workspace a toplevel lives on (minimized ones included).
     pub fn find_window(&self, surface: &WlSurface) -> Option<(usize, Window)> {
+        let is = |w: &&Window| w.toplevel().map(|t| t.wl_surface() == surface).unwrap_or(false);
         self.workspaces.iter().enumerate().find_map(|(i, ws)| {
             ws.space
                 .elements()
-                .find(|w| w.toplevel().map(|t| t.wl_surface() == surface).unwrap_or(false))
+                .find(is)
+                .or_else(|| ws.minimized.iter().find(is))
                 .map(|w| (i, w.clone()))
         })
+    }
+
+    /// Start the minimize animation and take the window out of the space.
+    pub fn minimize(&mut self, window: &Window) {
+        let ws = self.active_mut();
+        let Some(loc) = ws.space.element_location(window) else { return };
+        {
+            let mut st = window::window_state(window);
+            st.restore_loc = loc;
+            st.minimize.to(1.0, Spring::smooth());
+        }
+        ws.space.unmap_elem(window);
+        ws.minimized.push(window.clone());
+    }
+
+    /// Bring a minimized window back to where it was.
+    pub fn restore(&mut self, window: &Window) {
+        let ws = self.active_mut();
+        ws.minimized.retain(|w| w != window);
+        let loc = {
+            let mut st = window::window_state(window);
+            st.minimize.to(0.0, Spring::smooth());
+            st.restore_loc
+        };
+        ws.space.map_element(window.clone(), loc, true);
     }
 
     pub fn refresh(&mut self) {
         for ws in &mut self.workspaces {
             ws.space.refresh();
+            ws.minimized.retain(|w| w.alive());
         }
     }
 }

@@ -19,7 +19,10 @@ use smithay::{
 };
 
 use crate::{
+    animation::{AnimatedRect, Spring},
     input::grabs::{check_grab, MoveSurfaceGrab, ResizeSurfaceGrab},
+    layout::window::window_state,
+    render,
     state::State,
 };
 
@@ -34,8 +37,20 @@ impl XdgShellHandler for State {
         self.focus_window(Some(window));
     }
 
-    fn toplevel_destroyed(&mut self, _surface: ToplevelSurface) {
-        // Space::refresh drops dead windows; give focus to the next one.
+    fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
+        // Snapshot the window now: its buffers are about to disappear.
+        if let Some((ws, window)) = self.layout.find_window(surface.wl_surface()) {
+            let space = &self.layout.workspaces[ws].space;
+            if let Some(loc) = space.element_location(&window) {
+                let rect = Rectangle::new(loc.to_f64(), window.geometry().size.to_f64());
+                let scale = self.layout.primary_scale();
+                if let Some(renderer) = self.backend.renderer() {
+                    render::start_close_animation(renderer, &mut self.render_state, &window, ws, rect, scale);
+                }
+            }
+            self.layout.workspaces[ws].space.unmap_elem(&window);
+        }
+        // Give focus to the next window down the stack.
         self.layout.refresh();
         let next = self.layout.active().space.elements().last().cloned();
         self.focus_window(next);
@@ -92,6 +107,12 @@ impl XdgShellHandler for State {
         seat.get_pointer().unwrap().set_grab(self, grab, serial, Focus::Clear);
     }
 
+    fn minimize_request(&mut self, surface: ToplevelSurface) {
+        if let Some((_, window)) = self.layout.find_window(surface.wl_surface()) {
+            self.minimize_window(&window);
+        }
+    }
+
     fn maximize_request(&mut self, surface: ToplevelSurface) {
         self.set_maximized(&surface, true);
     }
@@ -122,6 +143,13 @@ impl State {
                     toplevel.send_configure();
                 }
             }
+            // The first commit with content starts the open animation.
+            let mut st = window_state(&window);
+            if !st.open_started && !window.geometry().size.is_empty() {
+                st.open_started = true;
+                st.open.set(0.0);
+                st.open.to(1.0, Spring::snappy());
+            }
         }
 
         self.popups.commit(surface);
@@ -137,7 +165,14 @@ impl State {
     pub fn set_maximized(&mut self, surface: &ToplevelSurface, maximize: bool) {
         let Some((_, window)) = self.layout.find_window(surface.wl_surface()) else { return };
         let area = self.layout.usable_area();
+        // Animate the frame from where it is now to wherever it ends up.
+        if let Some(loc) = self.layout.active().space.element_location(&window) {
+            let from = Rectangle::new(loc.to_f64(), window.geometry().size.to_f64());
+            window_state(&window).frame = Some(AnimatedRect::new(from));
+        }
         if maximize {
+            let loc = self.layout.active().space.element_location(&window).unwrap_or_default();
+            window_state(&window).restore_loc = loc;
             surface.with_pending_state(|state| {
                 state.states.set(xdg_toplevel::State::Maximized);
                 state.size = Some(area.size);
@@ -148,6 +183,8 @@ impl State {
                 state.states.unset(xdg_toplevel::State::Maximized);
                 state.size = None;
             });
+            let loc = window_state(&window).restore_loc;
+            self.layout.active_mut().space.map_element(window, loc, true);
         }
         if surface.is_initial_configure_sent() {
             surface.send_pending_configure();

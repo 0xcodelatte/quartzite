@@ -8,6 +8,7 @@
 //! - `render`    – turns the scene into a list of render elements each frame
 //! - `animation` – spring physics used by every animation
 
+mod animation;
 mod backend;
 mod handlers;
 mod input;

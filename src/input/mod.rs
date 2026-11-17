@@ -25,6 +25,8 @@ pub enum Action {
     Quit,
     CloseWindow,
     ToggleMaximize,
+    Minimize,
+    RestoreMinimized,
     Spawn(String),
     /// Ctrl+Alt+Fn on a TTY.
     ChangeVt(i32),
@@ -71,6 +73,8 @@ fn binding(cmd: CmdKey, mods: &ModifiersState, sym: Keysym) -> Option<Action> {
         return match sym {
             Keysym::q | Keysym::w => Some(Action::CloseWindow),
             Keysym::f => Some(Action::ToggleMaximize),
+            Keysym::m => Some(Action::Minimize),
+            Keysym::M => Some(Action::RestoreMinimized),
             Keysym::Return => Some(Action::Spawn(terminal)),
             _ => None,
         };
@@ -196,6 +200,16 @@ impl State {
                     toplevel.send_close();
                 }
             }
+            Action::Minimize => {
+                if let Some(window) = self.focused_window() {
+                    self.minimize_window(&window);
+                }
+            }
+            Action::RestoreMinimized => {
+                if let Some(window) = self.layout.active().minimized.last().cloned() {
+                    self.restore_window(&window);
+                }
+            }
             Action::ToggleMaximize => {
                 if let Some(toplevel) = self.focused_window().and_then(|w| w.toplevel().cloned()) {
                     let maximized = toplevel.with_pending_state(|s| {
@@ -206,6 +220,17 @@ impl State {
                 }
             }
         }
+    }
+
+    pub fn minimize_window(&mut self, window: &Window) {
+        self.layout.minimize(window);
+        let next = self.layout.active().space.elements().last().cloned();
+        self.focus_window(next);
+    }
+
+    pub fn restore_window(&mut self, window: &Window) {
+        self.layout.restore(window);
+        self.focus_window(Some(window.clone()));
     }
 
     pub fn focused_window(&self) -> Option<Window> {
@@ -226,7 +251,10 @@ impl State {
             }
         }
         for w in space.elements() {
-            crate::layout::window::window_state(w).focused = Some(w) == window.as_ref();
+            let mut st = crate::layout::window::window_state(w);
+            st.focused = Some(w) == window.as_ref();
+            let target = if st.focused { 1.0 } else { 0.0 };
+            st.focus.to(target, crate::animation::Spring::smooth());
             if let Some(t) = w.toplevel() {
                 t.send_pending_configure();
             }

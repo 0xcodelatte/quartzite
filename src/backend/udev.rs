@@ -333,7 +333,8 @@ impl State {
             Err(err) => tracing::warn!(?err, "failed to render frame"),
         }
 
-        self.redraw_needed = false;
+        // Keep rendering on every vblank while animations are running.
+        self.redraw_needed = self.render_state.animating;
         self.post_render(&output);
     }
 
