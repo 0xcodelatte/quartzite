@@ -17,6 +17,7 @@ use smithay::{
         renderer::{
             element::{
                 memory::MemoryRenderBufferRenderElement,
+                solid::{SolidColorBuffer, SolidColorRenderElement},
                 surface::{render_elements_from_surface_tree, WaylandSurfaceRenderElement},
                 texture::TextureRenderElement,
                 utils::{CropRenderElement, Relocate, RelocateRenderElement, RescaleRenderElement},
@@ -54,6 +55,7 @@ render_elements! {
     Shader=PixelShaderElement,
     Snapshot=RescaleRenderElement<TextureRenderElement<GlesTexture>>,
     Hidpi=TextureRenderElement<GlesTexture>,
+    Solid=SolidColorRenderElement,
     Cursor=MemoryRenderBufferRenderElement<GlesRenderer>,
 }
 
@@ -74,6 +76,7 @@ pub struct RenderState {
     shaders: Option<Shaders>,
     closing: Vec<ClosingWindow>,
     supersamplers: HashMap<String, hidpi::Supersampler>,
+    dim: Option<SolidColorBuffer>,
     /// Set while building a frame if any animation is still in flight;
     /// backends then schedule another frame for the next vblank.
     pub animating: bool,
@@ -81,7 +84,7 @@ pub struct RenderState {
 
 impl RenderState {
     pub fn new() -> Self {
-        Self { cursor: cursor::Cursor::load(), shaders: None, closing: Vec::new(), supersamplers: HashMap::new(), animating: false }
+        Self { cursor: cursor::Cursor::load(), shaders: None, closing: Vec::new(), supersamplers: HashMap::new(), dim: None, animating: false }
     }
 
     fn shaders(&mut self, renderer: &mut GlesRenderer) -> &Shaders {
@@ -241,22 +244,46 @@ fn push_space(
     closing.retain(|c| !(c.anim.is_settled() && c.anim.value() <= 0.0));
     rs.closing = closing;
 
+    // Exposé only applies to the active space.
+    let (expose, expose_moving) = if index == layout.active { layout.expose_progress(now) } else { (0.0, false) };
+    rs.animating |= expose_moving;
+    let targets = if expose > 0.0 { layout.expose_targets() } else { Vec::new() };
+    let target_of = |w: &Window| {
+        targets
+            .iter()
+            .find(|(t, _)| t == w)
+            .map(|(_, r)| (Rectangle::new(to_local(Point::default()) + r.loc, r.size), expose))
+    };
+
+    // Minimized windows: drawn only while animating or during Exposé.
+    for window in ws.minimized.iter().rev() {
+        let loc = window_state(window).restore_loc;
+        let base = Rectangle::new(to_local(loc), window.geometry().size.to_f64());
+        let draw = animate_window(rs, window, base, output_rect, target_of(window), now);
+        if draw.alpha > 0.01 {
+            push_window(renderer, rs, elements, window, &draw, scale, output_size);
+        }
+    }
+
     // `elements()` is bottom-to-top; render elements are front-to-back.
     for window in space.elements().rev() {
         let Some(loc) = space.element_location(window) else { continue };
         let base = Rectangle::new(to_local(loc), window.geometry().size.to_f64());
-        let draw = animate_window(rs, window, base, output_rect, now);
+        let draw = animate_window(rs, window, base, output_rect, target_of(window), now);
         push_window(renderer, rs, elements, window, &draw, scale, output_size);
     }
 
-    // Windows still shrinking toward the bottom of the screen.
-    for window in ws.minimized.iter().rev() {
-        let loc = window_state(window).restore_loc;
-        let base = Rectangle::new(to_local(loc), window.geometry().size.to_f64());
-        let draw = animate_window(rs, window, base, output_rect, now);
-        if draw.alpha > 0.01 {
-            push_window(renderer, rs, elements, window, &draw, scale, output_size);
-        }
+    // Dim the desktop behind the Exposé grid (drawn behind all windows).
+    if expose > 0.0 {
+        let dim = rs.dim.get_or_insert_with(|| SolidColorBuffer::new(output_rect.size.to_i32_round(), [0.0, 0.0, 0.0, 1.0]));
+        dim.update(output_rect.size.to_i32_round(), [0.0, 0.0, 0.0, (0.35 * expose) as f32]);
+        elements.push(OutputElement::Solid(SolidColorRenderElement::from_buffer(
+            dim,
+            Point::<i32, Physical>::default(),
+            scale,
+            1.0,
+            Kind::Unspecified,
+        )));
     }
 }
 
@@ -266,6 +293,7 @@ fn animate_window(
     window: &Window,
     base: Rectangle<f64, Logical>,
     output_rect: Rectangle<f64, Logical>,
+    expose: Option<(Rectangle<f64, Logical>, f64)>,
     now: Instant,
 ) -> WindowDraw {
     let mut st = window_state(window);
@@ -289,6 +317,9 @@ fn animate_window(
     let mut alpha = open.clamp(0.0, 1.0);
 
     // Minimize: shrink toward the bottom centre of the screen ("dock").
+    // Exposé brings minimized windows back into view.
+    let e = expose.map(|(_, e)| e.clamp(0.0, 1.0)).unwrap_or(0.0);
+    let mini = mini * (1.0 - e);
     if mini > 0.0 {
         let dock = Rectangle::new(
             (output_rect.size.w / 2.0 - visual.size.w * 0.05, output_rect.size.h - visual.size.h * 0.1).into(),
@@ -296,6 +327,10 @@ fn animate_window(
         );
         visual = lerp_rect(visual, dock, mini.clamp(0.0, 1.0));
         alpha *= lerp(1.0, 0.0, (mini * mini).clamp(0.0, 1.0));
+    }
+
+    if let Some((target, _)) = expose {
+        visual = lerp_rect(visual, target, e);
     }
 
     rs.animating |= animating;

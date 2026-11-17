@@ -32,6 +32,7 @@ pub enum Action {
     SwitchSpaceBy(i32),
     SwitchSpace(usize),
     MoveToSpaceBy(i32),
+    ToggleExpose,
     Spawn(String),
     /// Ctrl+Alt+Fn on a TTY.
     ChangeVt(i32),
@@ -64,7 +65,11 @@ impl CmdKey {
     }
 }
 
-fn binding(cmd: CmdKey, mods: &ModifiersState, sym: Keysym) -> Option<Action> {
+fn binding(cmd: CmdKey, mods: &ModifiersState, sym: Keysym, expose: bool) -> Option<Action> {
+    // Mission Control: Ctrl+↑ or F3; Escape leaves it.
+    if (mods.ctrl && sym == Keysym::Up) || sym == Keysym::F3 || (expose && sym == Keysym::Escape) {
+        return Some(Action::ToggleExpose);
+    }
     if mods.ctrl && mods.alt && sym == Keysym::BackSpace {
         return Some(Action::Quit);
     }
@@ -169,13 +174,14 @@ impl State {
         let time = Event::time_msec(&event);
         let pressed = event.state() == KeyState::Pressed;
         let cmd = self.cmd_key;
+        let expose = self.layout.expose_active();
         let action = self.seat.get_keyboard().unwrap().input(
             self,
             event.key_code(),
             event.state(),
             serial,
             time,
-            |_, mods, handle| match pressed.then(|| binding(cmd, mods, handle.modified_sym())).flatten() {
+            |_, mods, handle| match pressed.then(|| binding(cmd, mods, handle.modified_sym(), expose)).flatten() {
                 Some(action) => FilterResult::Intercept(action),
                 None => FilterResult::Forward,
             },
@@ -189,6 +195,21 @@ impl State {
         let pointer = self.seat.get_pointer().unwrap();
         let serial = SERIAL_COUNTER.next_serial();
         let state = event.state();
+
+        // In Exposé, a click picks a window instead of reaching clients.
+        if self.layout.expose_active() {
+            if state == ButtonState::Pressed {
+                let pos = pointer.current_location();
+                let picked = self
+                    .layout
+                    .expose_targets()
+                    .into_iter()
+                    .find(|(_, r)| r.contains(pos))
+                    .map(|(w, _)| w);
+                self.exit_expose(picked);
+            }
+            return;
+        }
 
         // Click to focus: the clicked window is raised and activated.
         if state == ButtonState::Pressed && !pointer.is_grabbed() {
@@ -255,6 +276,19 @@ impl State {
                     self.focus_window(Some(window));
                 }
             }
+            Action::ToggleExpose => {
+                if self.layout.expose_active() {
+                    self.exit_expose(None);
+                } else {
+                    self.layout.set_expose(true);
+                    // Clients shouldn't see hover/clicks while windows are thumbnails.
+                    let pointer = self.seat.get_pointer().unwrap();
+                    let loc = pointer.current_location();
+                    pointer.motion(self, None, &MotionEvent { location: loc, serial: SERIAL_COUNTER.next_serial(), time: 0 });
+                    pointer.frame(self);
+                    self.queue_redraw();
+                }
+            }
             Action::Minimize => {
                 if let Some(window) = self.focused_window() {
                     self.minimize_window(&window);
@@ -275,6 +309,19 @@ impl State {
                 }
             }
         }
+    }
+
+    /// Leave Exposé, optionally focusing (and un-minimizing) a window.
+    pub fn exit_expose(&mut self, picked: Option<Window>) {
+        self.layout.set_expose(false);
+        if let Some(window) = picked {
+            if self.layout.active().minimized.contains(&window) {
+                self.restore_window(&window);
+            } else {
+                self.focus_window(Some(window));
+            }
+        }
+        self.queue_redraw();
     }
 
     /// Focus follows the space: activate its topmost window.

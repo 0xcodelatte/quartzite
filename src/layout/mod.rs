@@ -3,6 +3,7 @@
 //! Each workspace owns a Smithay `Space<Window>`, which stores window
 //! positions and stacking order. All outputs are mapped into every space.
 
+pub mod expose;
 pub mod window;
 
 use smithay::{
@@ -41,6 +42,8 @@ pub struct Layout {
     slide: RefCell<Animated>,
     /// True while a touchpad swipe is dragging the spaces directly.
     swiping: bool,
+    /// Exposé progress: 0 = normal desktop, 1 = all windows in a grid.
+    expose: RefCell<Animated>,
 }
 
 impl Layout {
@@ -51,7 +54,30 @@ impl Layout {
             outputs: Vec::new(),
             slide: RefCell::new(Animated::new(0.0)),
             swiping: false,
+            expose: RefCell::new(Animated::new(0.0)),
         }
+    }
+
+    // ------------------------------------------------------------ Exposé
+
+    pub fn expose_active(&self) -> bool {
+        self.expose.borrow().target() > 0.5
+    }
+
+    pub fn set_expose(&mut self, on: bool) {
+        self.expose.borrow_mut().to(if on { 1.0 } else { 0.0 }, Spring::smooth());
+    }
+
+    /// Advance the Exposé spring; returns (progress, still moving).
+    pub fn expose_progress(&self, now: Instant) -> (f64, bool) {
+        let mut e = self.expose.borrow_mut();
+        let v = e.tick(now);
+        (v, !e.is_settled())
+    }
+
+    /// Exposé grid for the active space, in global coordinates.
+    pub fn expose_targets(&self) -> Vec<(Window, Rectangle<f64, Logical>)> {
+        expose::targets(self.active(), self.usable_area().to_f64())
     }
 
     // ------------------------------------------------------------ Spaces

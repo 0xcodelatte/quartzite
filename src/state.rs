@@ -172,6 +172,9 @@ impl State {
         &self,
         pos: Point<f64, Logical>,
     ) -> Option<(WlSurface, Point<f64, Logical>)> {
+        if self.layout.expose_active() {
+            return None;
+        }
         let space = &self.layout.active().space;
         space.element_under(pos).and_then(|(window, location)| {
             window
