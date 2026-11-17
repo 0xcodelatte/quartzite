@@ -6,9 +6,10 @@
 
 pub mod cursor;
 pub mod elements;
+pub mod hidpi;
 pub mod shaders;
 
-use std::time::Instant;
+use std::{collections::HashMap, time::Instant};
 
 use smithay::{
     backend::{
@@ -52,6 +53,7 @@ render_elements! {
     Window=WindowElement,
     Shader=PixelShaderElement,
     Snapshot=RescaleRenderElement<TextureRenderElement<GlesTexture>>,
+    Hidpi=TextureRenderElement<GlesTexture>,
     Cursor=MemoryRenderBufferRenderElement<GlesRenderer>,
 }
 
@@ -71,6 +73,7 @@ pub struct RenderState {
     pub cursor: cursor::Cursor,
     shaders: Option<Shaders>,
     closing: Vec<ClosingWindow>,
+    supersamplers: HashMap<String, hidpi::Supersampler>,
     /// Set while building a frame if any animation is still in flight;
     /// backends then schedule another frame for the next vblank.
     pub animating: bool,
@@ -78,7 +81,7 @@ pub struct RenderState {
 
 impl RenderState {
     pub fn new() -> Self {
-        Self { cursor: cursor::Cursor::load(), shaders: None, closing: Vec::new(), animating: false }
+        Self { cursor: cursor::Cursor::load(), shaders: None, closing: Vec::new(), supersamplers: HashMap::new(), animating: false }
     }
 
     fn shaders(&mut self, renderer: &mut GlesRenderer) -> &Shaders {
@@ -106,6 +109,9 @@ impl WindowDraw {
 
 /// Build the frame for `output`. `pointer` is the global cursor position
 /// when the compositor draws its own cursor.
+///
+/// Integer scales are composed directly. Fractional scales are composed at
+/// 2x offscreen and downscaled (see `hidpi`).
 pub fn output_elements(
     renderer: &mut GlesRenderer,
     rs: &mut RenderState,
@@ -113,14 +119,62 @@ pub fn output_elements(
     output: &Output,
     pointer: Option<Point<f64, Logical>>,
 ) -> Vec<OutputElement> {
+    let scale = output.current_scale();
+    if !hidpi::is_fractional(scale) {
+        let size = output.current_mode().map(|m| m.size).unwrap_or_default();
+        let size = output.current_transform().transform_size(size);
+        return scene_elements(renderer, rs, layout, output, pointer, scale.fractional_scale(), size);
+    }
+
+    let Some(logical) = layout.active().space.output_geometry(output).map(|g| g.size) else {
+        return Vec::new();
+    };
+    let name = output.name();
+    let needs_new = rs
+        .supersamplers
+        .get(&name)
+        .is_none_or(|s| s.size() != logical.to_physical(hidpi::SUPERSAMPLE));
+    if needs_new {
+        match hidpi::Supersampler::new(renderer, logical) {
+            Ok(s) => {
+                rs.supersamplers.insert(name.clone(), s);
+            }
+            Err(err) => {
+                tracing::error!(?err, "cannot create 2x buffer, falling back to direct scaling");
+                let size = output.current_mode().map(|m| m.size).unwrap_or_default();
+                return scene_elements(renderer, rs, layout, output, pointer, scale.fractional_scale(), size);
+            }
+        }
+    }
+    let size = rs.supersamplers[&name].size();
+    let scene = scene_elements(renderer, rs, layout, output, pointer, hidpi::SUPERSAMPLE as f64, size);
+    let sampler = rs.supersamplers.get_mut(&name).unwrap();
+    match sampler.render(renderer, &scene) {
+        Ok(elem) => vec![OutputElement::Hidpi(elem)],
+        Err(err) => {
+            tracing::error!(?err, "supersampled render failed");
+            Vec::new()
+        }
+    }
+}
+
+/// Compose the scene at `scale` for a target of `output_size` physical
+/// pixels (the output itself, or the 2x offscreen buffer).
+fn scene_elements(
+    renderer: &mut GlesRenderer,
+    rs: &mut RenderState,
+    layout: &Layout,
+    output: &Output,
+    pointer: Option<Point<f64, Logical>>,
+    scale: f64,
+    output_size: Size<i32, Physical>,
+) -> Vec<OutputElement> {
     let now = Instant::now();
     let ws = layout.active();
     let space = &ws.space;
     let Some(output_geo) = space.output_geometry(output) else {
         return Vec::new();
     };
-    let scale = output.current_scale().fractional_scale();
-    let output_size = output.current_mode().map(|m| m.size).unwrap_or_default();
     let output_rect = Rectangle::from_size(output_geo.size.to_f64());
     rs.shaders(renderer);
     rs.animating = false;

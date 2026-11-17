@@ -3,7 +3,7 @@
 
 use smithay::{
     backend::{
-        renderer::{damage::OutputDamageTracker, gles::GlesRenderer, ImportDma},
+        renderer::{damage::OutputDamageTracker, gles::GlesRenderer, ImportDma, Renderer, TextureFilter},
         winit::{self, WinitEvent, WinitGraphicsBackend},
     },
     output::{Mode, Output, PhysicalProperties, Subpixel},
@@ -40,10 +40,12 @@ pub fn init(
     );
     output.create_global::<State>(&state.display_handle);
     // GL's origin is bottom-left; Flipped180 makes the nested window upright.
-    output.change_current_state(Some(mode), Some(Transform::Flipped180), None, Some((0, 0).into()));
+    output.change_current_state(Some(mode), Some(Transform::Flipped180), Some(render::hidpi::scale_from_env()), Some((0, 0).into()));
     output.set_preferred(mode);
 
     let damage_tracker = OutputDamageTracker::from_output(&output);
+    // Linear filtering for the 2x → fractional downscale.
+    backend.renderer().downscale_filter(TextureFilter::Linear)?;
     let formats = backend.renderer().dmabuf_formats();
     state.init_dmabuf(formats);
     state.backend = Backend::Winit(WinitData {

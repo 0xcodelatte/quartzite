@@ -21,7 +21,7 @@ use smithay::{
         },
         egl::{EGLContext, EGLDisplay},
         libinput::{LibinputInputBackend, LibinputSessionInterface},
-        renderer::{gles::GlesRenderer, ImportDma},
+        renderer::{gles::GlesRenderer, ImportDma, Renderer, TextureFilter},
         session::{libseat::LibSeatSession, Event as SessionEvent, Session},
         udev::{self, UdevBackend, UdevEvent},
     },
@@ -177,7 +177,8 @@ fn add_gpu(
     // SAFETY: `GlesRenderer::new` requires that nothing else makes this
     // context current or changes its GL state behind the renderer's back.
     // The context is moved into the renderer and never shared.
-    let renderer = unsafe { GlesRenderer::new(context)? };
+    let mut renderer = unsafe { GlesRenderer::new(context)? };
+    renderer.downscale_filter(TextureFilter::Linear)?;
 
     let token = event_loop.handle().insert_source(notifier, move |event, _, state| match event {
         DrmEvent::VBlank(crtc) => state.on_vblank(crtc),
@@ -257,7 +258,7 @@ fn scan_connectors(state: &mut State) {
             },
         );
         let output_mode = OutputMode::from(mode);
-        output.change_current_state(Some(output_mode), Some(Transform::Normal), None, None);
+        output.change_current_state(Some(output_mode), Some(Transform::Normal), Some(render::hidpi::scale_from_env()), None);
         output.set_preferred(output_mode);
 
         let allocator = GbmAllocator::new(gpu.gbm.clone(), GbmBufferFlags::RENDERING | GbmBufferFlags::SCANOUT);
