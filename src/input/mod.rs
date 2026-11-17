@@ -5,7 +5,8 @@ pub mod grabs;
 
 use smithay::{
     backend::input::{
-        AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, InputBackend, InputEvent,
+        AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, GestureBeginEvent,
+        GestureSwipeUpdateEvent as _, InputBackend, InputEvent,
         KeyState, KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent, PointerMotionEvent,
     },
     desktop::Window,
@@ -27,6 +28,10 @@ pub enum Action {
     ToggleMaximize,
     Minimize,
     RestoreMinimized,
+    /// Relative (+1/-1) space switch.
+    SwitchSpaceBy(i32),
+    SwitchSpace(usize),
+    MoveToSpaceBy(i32),
     Spawn(String),
     /// Ctrl+Alt+Fn on a TTY.
     ChangeVt(i32),
@@ -67,6 +72,21 @@ fn binding(cmd: CmdKey, mods: &ModifiersState, sym: Keysym) -> Option<Action> {
     let vt = sym.raw().wrapping_sub(Keysym::XF86_Switch_VT_1.raw());
     if vt < 12 {
         return Some(Action::ChangeVt(vt as i32 + 1));
+    }
+    // Spaces use Ctrl like macOS (Ctrl+←/→, Ctrl+1…4).
+    if mods.ctrl && !mods.alt && !mods.logo {
+        let dir = match sym {
+            Keysym::Left => Some(-1),
+            Keysym::Right => Some(1),
+            _ => None,
+        };
+        if let Some(d) = dir {
+            return Some(if mods.shift { Action::MoveToSpaceBy(d) } else { Action::SwitchSpaceBy(d) });
+        }
+        let n = sym.raw().wrapping_sub(Keysym::_1.raw());
+        if n < crate::layout::SPACE_COUNT as u32 {
+            return Some(Action::SwitchSpace(n as usize));
+        }
     }
     if cmd.held(mods) {
         let terminal = std::env::var("TERMINAL").unwrap_or_else(|_| "foot".into());
@@ -121,6 +141,24 @@ impl State {
                 self.queue_redraw();
             }
             InputEvent::PointerButton { event } => self.on_button::<I>(event),
+            // Three/four-finger horizontal swipes drag between Spaces.
+            InputEvent::GestureSwipeBegin { event } => {
+                self.swipe_fingers = event.fingers();
+            }
+            InputEvent::GestureSwipeUpdate { event } => {
+                if self.swipe_fingers >= 3 {
+                    let width = self.layout.usable_area().size.w.max(1) as f64;
+                    self.layout.swipe_update(-event.delta_x() / width);
+                    self.queue_redraw();
+                }
+            }
+            InputEvent::GestureSwipeEnd { .. } => {
+                if self.swipe_fingers >= 3 {
+                    self.layout.swipe_end();
+                    self.after_space_switch();
+                }
+                self.swipe_fingers = 0;
+            }
             InputEvent::PointerAxis { event } => self.on_axis::<I>(event),
             _ => {}
         }
@@ -200,6 +238,23 @@ impl State {
                     toplevel.send_close();
                 }
             }
+            Action::SwitchSpaceBy(d) => {
+                self.layout.switch_by(d);
+                self.after_space_switch();
+            }
+            Action::SwitchSpace(i) => {
+                self.layout.switch_to(i);
+                self.after_space_switch();
+            }
+            Action::MoveToSpaceBy(d) => {
+                if let Some(window) = self.focused_window() {
+                    let target = (self.layout.active as i32 + d).max(0) as usize;
+                    self.layout.move_to_space(&window, target);
+                    self.layout.switch_to(target);
+                    self.after_space_switch();
+                    self.focus_window(Some(window));
+                }
+            }
             Action::Minimize => {
                 if let Some(window) = self.focused_window() {
                     self.minimize_window(&window);
@@ -220,6 +275,12 @@ impl State {
                 }
             }
         }
+    }
+
+    /// Focus follows the space: activate its topmost window.
+    pub fn after_space_switch(&mut self) {
+        let top = self.layout.active().space.elements().last().cloned();
+        self.focus_window(top);
     }
 
     pub fn minimize_window(&mut self, window: &Window) {

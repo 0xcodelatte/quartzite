@@ -57,6 +57,8 @@ pub struct State {
     /// after rendering a frame.
     pub redraw_needed: bool,
     pub cmd_key: CmdKey,
+    /// Finger count of the touchpad swipe in progress (0 = none).
+    pub swipe_fingers: u32,
 }
 
 impl State {
@@ -101,6 +103,7 @@ impl State {
             seat,
             redraw_needed: true,
             cmd_key: CmdKey::from_env(true),
+            swipe_fingers: 0,
         })
     }
 

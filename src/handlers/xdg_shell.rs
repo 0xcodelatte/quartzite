@@ -149,6 +149,9 @@ impl State {
                 st.open_started = true;
                 st.open.set(0.0);
                 st.open.to(1.0, Spring::snappy());
+                drop(st);
+                // Like macOS, new windows open centred.
+                self.layout.center_window(&window);
             }
         }
 

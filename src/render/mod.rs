@@ -170,9 +170,7 @@ fn scene_elements(
     output_size: Size<i32, Physical>,
 ) -> Vec<OutputElement> {
     let now = Instant::now();
-    let ws = layout.active();
-    let space = &ws.space;
-    let Some(output_geo) = space.output_geometry(output) else {
+    let Some(output_geo) = layout.active().space.output_geometry(output) else {
         return Vec::new();
     };
     let output_rect = Rectangle::from_size(output_geo.size.to_f64());
@@ -187,13 +185,42 @@ fn scene_elements(
         }
     }
 
+    // Spaces: normally one is visible; during a slide, two side by side.
+    let (visible, sliding) = layout.visible_spaces(now);
+    rs.animating |= sliding;
+    for (index, offset) in visible {
+        let shift = Point::<f64, Logical>::from((offset * output_rect.size.w, 0.0));
+        push_space(renderer, rs, &mut elements, layout, index, output_geo.loc, shift, output_rect, scale, output_size, now);
+    }
+    elements
+}
+
+/// All windows of one space, shifted horizontally by `shift`.
+#[allow(clippy::too_many_arguments)]
+fn push_space(
+    renderer: &mut GlesRenderer,
+    rs: &mut RenderState,
+    elements: &mut Vec<OutputElement>,
+    layout: &Layout,
+    index: usize,
+    output_loc: Point<i32, Logical>,
+    shift: Point<f64, Logical>,
+    output_rect: Rectangle<f64, Logical>,
+    scale: f64,
+    output_size: Size<i32, Physical>,
+    now: Instant,
+) {
+    let ws = &layout.workspaces[index];
+    let space = &ws.space;
+    let to_local = |loc: Point<i32, Logical>| (loc - output_loc).to_f64() + shift;
+
     // Closing windows fade and shrink from their snapshot.
     let mut closing = std::mem::take(&mut rs.closing);
-    for c in closing.iter_mut().filter(|c| c.workspace == layout.active) {
+    for c in closing.iter_mut().filter(|c| c.workspace == index) {
         let p = c.anim.tick(now);
         rs.animating |= !c.anim.is_settled();
         let mut rect = c.rect;
-        rect.loc -= output_geo.loc.to_f64();
+        rect.loc = rect.loc - output_loc.to_f64() + shift;
         let loc: Point<f64, Physical> = rect.loc.to_physical(scale);
         let tex = TextureRenderElement::from_static_texture(
             c.id.clone(),
@@ -217,21 +244,20 @@ fn scene_elements(
     // `elements()` is bottom-to-top; render elements are front-to-back.
     for window in space.elements().rev() {
         let Some(loc) = space.element_location(window) else { continue };
-        let base = Rectangle::new((loc - output_geo.loc).to_f64(), window.geometry().size.to_f64());
+        let base = Rectangle::new(to_local(loc), window.geometry().size.to_f64());
         let draw = animate_window(rs, window, base, output_rect, now);
-        push_window(renderer, rs, &mut elements, window, &draw, scale, output_size);
+        push_window(renderer, rs, elements, window, &draw, scale, output_size);
     }
 
     // Windows still shrinking toward the bottom of the screen.
     for window in ws.minimized.iter().rev() {
         let loc = window_state(window).restore_loc;
-        let base = Rectangle::new((loc - output_geo.loc).to_f64(), window.geometry().size.to_f64());
+        let base = Rectangle::new(to_local(loc), window.geometry().size.to_f64());
         let draw = animate_window(rs, window, base, output_rect, now);
         if draw.alpha > 0.01 {
-            push_window(renderer, rs, &mut elements, window, &draw, scale, output_size);
+            push_window(renderer, rs, elements, window, &draw, scale, output_size);
         }
     }
-    elements
 }
 
 /// Sample this window's springs and compute where it appears this frame.
