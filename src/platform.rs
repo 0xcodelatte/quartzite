@@ -1,3 +1,4 @@
+#![cfg_attr(not(feature = "udev"), allow(dead_code))]
 //! The few places where Linux and the BSDs differ. Everything else goes
 //! through libseat (sessions), libinput (input) and DRM/KMS (display),
 //! which all three systems provide.

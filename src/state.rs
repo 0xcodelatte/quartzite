@@ -32,6 +32,7 @@ pub struct State {
     pub start_time: Instant,
     pub socket_name: OsString,
     pub display_handle: DisplayHandle,
+    #[allow(dead_code)] // handy for timers; kept for future features
     pub loop_handle: LoopHandle<'static, State>,
     pub loop_signal: LoopSignal,
 
@@ -39,6 +40,7 @@ pub struct State {
     pub layout: Layout,
     pub render_state: RenderState,
     /// Draw our own cursor (DRM). Nested, the host draws it.
+    #[cfg_attr(not(feature = "udev"), allow(dead_code))]
     pub draw_cursor: bool,
 
     // Smithay protocol state
@@ -46,6 +48,7 @@ pub struct State {
     pub xdg_shell_state: XdgShellState,
     pub layer_shell_state: WlrLayerShellState,
     pub shm_state: ShmState,
+    #[allow(dead_code)] // must stay alive to keep the xdg-output global
     pub output_manager_state: OutputManagerState,
     pub seat_state: SeatState<State>,
     pub data_device_state: DataDeviceState,
