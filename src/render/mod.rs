@@ -4,6 +4,7 @@
 //! buffers here, so the compositor is in full control of the final frame.
 //! Animations are applied as transforms on top of the client buffers.
 
+pub mod blur;
 pub mod cursor;
 pub mod elements;
 pub mod hidpi;
@@ -42,7 +43,7 @@ use crate::{
 use elements::RoundedElement;
 use shaders::Shaders;
 
-pub const CLEAR_COLOR: [f32; 4] = [0.11, 0.12, 0.15, 1.0];
+pub const CLEAR_COLOR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 pub const CORNER_RADIUS: f64 = 10.0;
 
 type Transformed = RelocateRenderElement<RescaleRenderElement<CropRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>>>;
@@ -56,6 +57,7 @@ render_elements! {
     Snapshot=RescaleRenderElement<TextureRenderElement<GlesTexture>>,
     Hidpi=TextureRenderElement<GlesTexture>,
     Solid=SolidColorRenderElement,
+    Blur=RoundedElement<TextureRenderElement<GlesTexture>>,
     Cursor=MemoryRenderBufferRenderElement<GlesRenderer>,
 }
 
@@ -77,6 +79,10 @@ pub struct RenderState {
     closing: Vec<ClosingWindow>,
     supersamplers: HashMap<String, hidpi::Supersampler>,
     dim: Option<SolidColorBuffer>,
+    wallpaper: Option<PixelShaderElement>,
+    blur: HashMap<String, blur::BlurCache>,
+    /// `QUARTZITE_BLUR=1`: translucent windows show a blurred wallpaper.
+    pub blur_windows: bool,
     /// Set while building a frame if any animation is still in flight;
     /// backends then schedule another frame for the next vblank.
     pub animating: bool,
@@ -84,7 +90,17 @@ pub struct RenderState {
 
 impl RenderState {
     pub fn new() -> Self {
-        Self { cursor: cursor::Cursor::load(), shaders: None, closing: Vec::new(), supersamplers: HashMap::new(), dim: None, animating: false }
+        Self {
+            cursor: cursor::Cursor::load(),
+            shaders: None,
+            closing: Vec::new(),
+             supersamplers: HashMap::new(),
+            dim: None,
+            wallpaper: None,
+            blur: HashMap::new(),
+            blur_windows: std::env::var("QUARTZITE_BLUR").is_ok_and(|v| v == "1"),
+            animating: false,
+        }
     }
 
     fn shaders(&mut self, renderer: &mut GlesRenderer) -> &Shaders {
@@ -193,9 +209,56 @@ fn scene_elements(
     rs.animating |= sliding;
     for (index, offset) in visible {
         let shift = Point::<f64, Logical>::from((offset * output_rect.size.w, 0.0));
-        push_space(renderer, rs, &mut elements, layout, index, output_geo.loc, shift, output_rect, scale, output_size, now);
+        push_space(renderer, rs, &mut elements, layout, index, output_geo.loc, shift, output_rect, scale, output_size, &output.name(), now);
     }
+
+    elements.push(OutputElement::Shader(wallpaper_element(rs, output_rect)));
     elements
+}
+
+fn wallpaper_element(rs: &mut RenderState, output_rect: Rectangle<f64, Logical>) -> PixelShaderElement {
+    let area = output_rect.to_i32_round();
+    let program = rs.shaders.as_ref().unwrap().wallpaper.clone();
+    let wp = rs
+        .wallpaper
+        .get_or_insert_with(|| PixelShaderElement::new(program, area, Some(vec![area]), 1.0, vec![], Kind::Unspecified));
+    wp.resize(area, Some(vec![area]));
+    wp.clone()
+}
+
+/// Blurred-wallpaper element covering `rect` (output-local logical).
+pub fn blur_element(
+    renderer: &mut GlesRenderer,
+    rs: &mut RenderState,
+    output_name: &str,
+    id: &Id,
+    rect: Rectangle<f64, Logical>,
+    output_rect: Rectangle<f64, Logical>,
+    radius: f32,
+    alpha: f32,
+    tint: f32,
+    scale: f64,
+    output_size: Size<i32, Physical>,
+) -> Option<OutputElement> {
+    let wallpaper = wallpaper_element(rs, output_rect);
+    let shaders = rs.shaders.as_ref().unwrap();
+    let program = shaders.blur.clone();
+    let cache = match rs.blur.get_mut(output_name) {
+        Some(c) if c.matches(output_rect.size) => c,
+        _ => {
+            let c = blur::BlurCache::new(renderer, output_rect.size, &wallpaper).ok()?;
+            rs.blur.insert(output_name.to_string(), c);
+            rs.blur.get_mut(output_name).unwrap()
+        }
+    };
+    let (tex, texel) = cache.element(renderer, id, rect, alpha, scale);
+    let geo = rect.to_physical_precise_round(scale);
+    Some(OutputElement::Blur(
+        RoundedElement::new(tex, geo, radius, output_size, program).with_uniforms(vec![
+            Uniform::new("texel", texel),
+            Uniform::new("tint_strength", tint),
+        ]),
+    ))
 }
 
 /// All windows of one space, shifted horizontally by `shift`.
@@ -211,6 +274,7 @@ fn push_space(
     output_rect: Rectangle<f64, Logical>,
     scale: f64,
     output_size: Size<i32, Physical>,
+    output_name: &str,
     now: Instant,
 ) {
     let ws = &layout.workspaces[index];
@@ -261,7 +325,7 @@ fn push_space(
         let base = Rectangle::new(to_local(loc), window.geometry().size.to_f64());
         let draw = animate_window(rs, window, base, output_rect, target_of(window), now);
         if draw.alpha > 0.01 {
-            push_window(renderer, rs, elements, window, &draw, scale, output_size);
+            push_window(renderer, rs, elements, window, &draw, scale, output_size, output_name, output_rect);
         }
     }
 
@@ -270,7 +334,7 @@ fn push_space(
         let Some(loc) = space.element_location(window) else { continue };
         let base = Rectangle::new(to_local(loc), window.geometry().size.to_f64());
         let draw = animate_window(rs, window, base, output_rect, target_of(window), now);
-        push_window(renderer, rs, elements, window, &draw, scale, output_size);
+        push_window(renderer, rs, elements, window, &draw, scale, output_size, output_name, output_rect);
     }
 
     // Dim the desktop behind the Exposé grid (drawn behind all windows).
@@ -344,6 +408,7 @@ fn scale_about_center(r: Rectangle<f64, Logical>, s: f64) -> Rectangle<f64, Logi
 }
 
 /// Popups, then the rounded window, then its shadow (front to back).
+#[allow(clippy::too_many_arguments)]
 fn push_window(
     renderer: &mut GlesRenderer,
     rs: &mut RenderState,
@@ -352,6 +417,8 @@ fn push_window(
     draw: &WindowDraw,
     scale: f64,
     output_size: Size<i32, Physical>,
+    output_name: &str,
+    output_rect: Rectangle<f64, Logical>,
 ) {
     let Some(surface) = window.wl_surface() else { return };
     let geo = window.geometry();
@@ -410,6 +477,15 @@ fn push_window(
             output_size,
             program.clone(),
         )));
+    }
+
+    if rs.blur_windows {
+        let id = window_state(window).blur_id.clone();
+        if let Some(blur) = blur_element(
+            renderer, rs, &output_name, &id, draw.visual, output_rect, radius, draw.alpha, 0.0, scale, output_size,
+        ) {
+            out.push(blur);
+        }
     }
 
     out.push(OutputElement::Shader(shadow_element(rs, window, draw)));

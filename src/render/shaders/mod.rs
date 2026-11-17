@@ -7,6 +7,8 @@ use smithay::backend::renderer::gles::{
 pub struct Shaders {
     pub shadow: GlesPixelProgram,
     pub rounded: GlesTexProgram,
+    pub blur: GlesTexProgram,
+    pub wallpaper: GlesPixelProgram,
 }
 
 impl Shaders {
@@ -29,6 +31,16 @@ impl Shaders {
                 UniformName::new("radius", UniformType::_1f),
             ],
         )?;
-        Ok(Self { shadow, rounded })
+        let blur = renderer.compile_custom_texture_shader(
+            include_str!("blur.frag"),
+            &[
+                UniformName::new("geo", UniformType::_4f),
+                UniformName::new("radius", UniformType::_1f),
+                UniformName::new("texel", UniformType::_2f),
+                UniformName::new("tint_strength", UniformType::_1f),
+            ],
+        )?;
+        let wallpaper = renderer.compile_custom_pixel_shader(include_str!("wallpaper.frag"), &[])?;
+        Ok(Self { shadow, rounded, blur, wallpaper })
     }
 }

@@ -20,6 +20,8 @@ pub struct RoundedElement<E> {
     /// Untransformed output size, needed to map into framebuffer space.
     output_size: Size<i32, Physical>,
     program: GlesTexProgram,
+    /// Extra uniforms for programs that need them (e.g. blur).
+    extra: Vec<Uniform<'static>>,
 }
 
 impl<E> RoundedElement<E> {
@@ -30,7 +32,12 @@ impl<E> RoundedElement<E> {
         output_size: Size<i32, Physical>,
         program: GlesTexProgram,
     ) -> Self {
-        Self { inner, geo, radius, output_size, program }
+        Self { inner, geo, radius, output_size, program, extra: Vec::new() }
+    }
+
+    pub fn with_uniforms(mut self, extra: Vec<Uniform<'static>>) -> Self {
+        self.extra = extra;
+        self
     }
 }
 
@@ -94,10 +101,11 @@ impl<E: RenderElement<GlesRenderer>> RenderElement<GlesRenderer> for RoundedElem
         // Smithay's projection maps transformed output coordinates straight
         // onto gl_FragCoord, so applying the output transform is enough.
         let fb = frame.transformation().transform_rect_in(self.geo, &self.output_size);
-        let uniforms = vec![
+        let mut uniforms = vec![
             Uniform::new("geo", [fb.loc.x as f32, fb.loc.y as f32, fb.size.w as f32, fb.size.h as f32]),
             Uniform::new("radius", self.radius),
         ];
+        uniforms.extend(self.extra.iter().cloned());
         frame.override_default_tex_program(self.program.clone(), uniforms);
         let result = self.inner.draw(frame, src, dst, damage, opaque_regions);
         frame.clear_tex_program_override();

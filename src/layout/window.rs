@@ -3,7 +3,7 @@
 use std::cell::{RefCell, RefMut};
 
 use smithay::{
-    backend::renderer::gles::element::PixelShaderElement,
+    backend::renderer::{element::Id, gles::element::PixelShaderElement},
     desktop::Window,
     utils::{Logical, Point},
 };
@@ -28,6 +28,8 @@ pub struct WindowState {
     /// the damage tracker skip it when nothing changed.
     pub shadow: Option<PixelShaderElement>,
     pub shadow_params: [f32; 8],
+    /// Stable id for this window's blur element (for damage tracking).
+    pub blur_id: Id,
 }
 
 impl Default for WindowState {
@@ -42,6 +44,7 @@ impl Default for WindowState {
             frame: None,
             shadow: None,
             shadow_params: [0.0; 8],
+            blur_id: Id::new(),
         }
     }
 }
