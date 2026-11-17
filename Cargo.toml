@@ -1,0 +1,31 @@
+[package]
+name = "quartzite"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+description = "A macOS WindowServer-style Wayland compositor built on Smithay"
+license = "MIT"
+
+[features]
+default = ["udev"]
+# DRM/KMS + libseat + libinput backend for running on a real TTY.
+# Disable (`--no-default-features`) to build a winit-only test binary.
+udev = [
+    "smithay/backend_drm",
+    "smithay/backend_gbm",
+    "smithay/backend_libinput",
+    "smithay/backend_udev",
+    "smithay/backend_session_libseat",
+]
+
+[dependencies]
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dependencies.smithay]
+version = "0.7.0"
+default-features = false
+features = ["backend_winit", "backend_egl", "renderer_gl", "wayland_frontend", "desktop"]
+
+[profile.release]
+lto = "thin"
