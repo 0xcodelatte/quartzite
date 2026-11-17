@@ -226,6 +226,7 @@ impl State {
             }
         }
         for w in space.elements() {
+            crate::layout::window::window_state(w).focused = Some(w) == window.as_ref();
             if let Some(t) = w.toplevel() {
                 t.send_pending_configure();
             }

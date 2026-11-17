@@ -3,6 +3,8 @@
 //! Each workspace owns a Smithay `Space<Window>`, which stores window
 //! positions and stacking order. All outputs are mapped into every space.
 
+pub mod window;
+
 use smithay::{
     desktop::{Space, Window},
     output::Output,
@@ -43,10 +45,6 @@ impl Layout {
         &mut self.workspaces[self.active]
     }
 
-    pub fn outputs(&self) -> impl Iterator<Item = &Output> {
-        self.outputs.iter()
-    }
-
     /// Outputs are laid out left to right in global coordinates.
     pub fn add_output(&mut self, output: &Output) {
         let x: i32 = self
@@ -58,13 +56,6 @@ impl Layout {
         self.outputs.push(output.clone());
         for ws in &mut self.workspaces {
             ws.space.map_output(output, (x, 0));
-        }
-    }
-
-    pub fn remove_output(&mut self, output: &Output) {
-        self.outputs.retain(|o| o != output);
-        for ws in &mut self.workspaces {
-            ws.space.unmap_output(output);
         }
     }
 
