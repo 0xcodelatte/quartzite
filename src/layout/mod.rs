@@ -7,7 +7,7 @@ pub mod expose;
 pub mod window;
 
 use smithay::{
-    desktop::{Space, Window},
+    desktop::{layer_map_for_output, Space, Window},
     output::Output,
     reexports::wayland_server::protocol::wl_surface::WlSurface,
     utils::{IsAlive, Logical, Point, Rectangle},
@@ -28,6 +28,9 @@ impl Workspace {
         Self { space: Space::default(), minimized: Vec::new() }
     }
 }
+
+/// Height reserved for the global menu bar, in logical pixels.
+pub const MENU_BAR_HEIGHT: i32 = 28;
 
 /// Number of Spaces (virtual desktops).
 pub const SPACE_COUNT: usize = 4;
@@ -172,10 +175,33 @@ impl Layout {
         self.outputs.first().map(|o| o.current_scale().fractional_scale()).unwrap_or(1.0)
     }
 
-    /// Area windows may occupy on the primary output.
+    pub fn primary_output(&self) -> Option<&Output> {
+        self.outputs.first()
+    }
+
+    pub fn all_outputs(&self) -> impl Iterator<Item = &Output> {
+        self.outputs.iter()
+    }
+
+    /// True when no layer-shell client reserves the top edge, so we draw
+    /// (and reserve space for) a built-in translucent menu bar.
+    pub fn builtin_menu_bar(&self, output: &Output) -> bool {
+        layer_map_for_output(output).non_exclusive_zone().loc.y == 0
+    }
+
+    /// Area windows may occupy on the primary output: the screen minus the
+    /// menu bar and any other exclusive layer-shell zones (docks, panels).
     pub fn usable_area(&self) -> Rectangle<i32, Logical> {
-        self.primary_output_geometry()
-            .unwrap_or_else(|| Rectangle::from_size((1280, 800).into()))
+        let (Some(output), Some(geo)) = (self.primary_output(), self.primary_output_geometry()) else {
+            return Rectangle::from_size((1280, 800).into());
+        };
+        let zone = layer_map_for_output(output).non_exclusive_zone();
+        let mut area = Rectangle::new(geo.loc + zone.loc, zone.size);
+        if zone.loc.y == 0 {
+            area.loc.y += MENU_BAR_HEIGHT;
+            area.size.h -= MENU_BAR_HEIGHT;
+        }
+        area
     }
 
     /// Centre a window in the usable area (done once it has a size).

@@ -18,6 +18,7 @@ use smithay::{
         renderer::{
             element::{
                 memory::MemoryRenderBufferRenderElement,
+                AsRenderElements,
                 solid::{SolidColorBuffer, SolidColorRenderElement},
                 surface::{render_elements_from_surface_tree, WaylandSurfaceRenderElement},
                 texture::TextureRenderElement,
@@ -29,16 +30,16 @@ use smithay::{
             Bind, Frame, Offscreen, Renderer,
         },
     },
-    desktop::{PopupManager, Window},
+    desktop::{layer_map_for_output, PopupManager, Window},
     output::Output,
     render_elements,
     utils::{Logical, Physical, Point, Rectangle, Scale, Size, Transform},
-    wayland::seat::WaylandFocus,
+    wayland::{seat::WaylandFocus, shell::wlr_layer::Layer},
 };
 
 use crate::{
     animation::{lerp, lerp_rect, Animated, Spring},
-    layout::{window::window_state, Layout},
+    layout::{window::window_state, Layout, MENU_BAR_HEIGHT},
 };
 use elements::RoundedElement;
 use shaders::Shaders;
@@ -81,6 +82,7 @@ pub struct RenderState {
     dim: Option<SolidColorBuffer>,
     wallpaper: Option<PixelShaderElement>,
     blur: HashMap<String, blur::BlurCache>,
+    menu_bar_id: Id,
     /// `QUARTZITE_BLUR=1`: translucent windows show a blurred wallpaper.
     pub blur_windows: bool,
     /// Set while building a frame if any animation is still in flight;
@@ -98,6 +100,7 @@ impl RenderState {
             dim: None,
             wallpaper: None,
             blur: HashMap::new(),
+            menu_bar_id: Id::new(),
             blur_windows: std::env::var("QUARTZITE_BLUR").is_ok_and(|v| v == "1"),
             animating: false,
         }
@@ -204,12 +207,59 @@ fn scene_elements(
         }
     }
 
+    // Layer shell: overlay/top layers (panels, menu bar client) go above
+    // windows; when no client claims the top edge we draw our own bar.
+    let name = output.name();
+    {
+        let map = layer_map_for_output(output);
+        for layer in map.layers_on(Layer::Overlay).chain(map.layers_on(Layer::Top)) {
+            let Some(geo) = map.layer_geometry(layer) else { continue };
+            elements.extend(
+                layer
+                    .render_elements::<WaylandSurfaceRenderElement<GlesRenderer>>(
+                        renderer,
+                        geo.loc.to_physical_precise_round(scale),
+                        Scale::from(scale),
+                        1.0,
+                    )
+                    .into_iter()
+                    .map(OutputElement::Surface),
+            );
+        }
+    }
+    if layout.builtin_menu_bar(output) {
+        let bar = Rectangle::new(Point::default(), Size::from((output_rect.size.w, MENU_BAR_HEIGHT as f64)));
+        let id = rs.menu_bar_id.clone();
+        if let Some(e) = blur_element(renderer, rs, &name, &id, bar, output_rect, 0.0, 0.92, 0.35, scale, output_size) {
+            elements.push(e);
+        }
+    }
+
     // Spaces: normally one is visible; during a slide, two side by side.
     let (visible, sliding) = layout.visible_spaces(now);
     rs.animating |= sliding;
     for (index, offset) in visible {
         let shift = Point::<f64, Logical>::from((offset * output_rect.size.w, 0.0));
         push_space(renderer, rs, &mut elements, layout, index, output_geo.loc, shift, output_rect, scale, output_size, &output.name(), now);
+    }
+
+    // Background/bottom layers sit between the windows and the wallpaper.
+    {
+        let map = layer_map_for_output(output);
+        for layer in map.layers_on(Layer::Bottom).chain(map.layers_on(Layer::Background)) {
+            let Some(geo) = map.layer_geometry(layer) else { continue };
+            elements.extend(
+                layer
+                    .render_elements::<WaylandSurfaceRenderElement<GlesRenderer>>(
+                        renderer,
+                        geo.loc.to_physical_precise_round(scale),
+                        Scale::from(scale),
+                        1.0,
+                    )
+                    .into_iter()
+                    .map(OutputElement::Surface),
+            );
+        }
     }
 
     elements.push(OutputElement::Shader(wallpaper_element(rs, output_rect)));

@@ -38,6 +38,7 @@ impl CompositorHandler for State {
         }
 
         self.handle_xdg_commit(surface);
+        self.handle_layer_commit(surface);
         grabs::handle_resize_commit(&mut self.layout, surface);
         self.queue_redraw();
     }

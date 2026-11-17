@@ -62,6 +62,7 @@ pub fn init(
                 let mode = Mode { size, refresh: 60_000 };
                 output.change_current_state(Some(mode), None, None, None);
                 output.set_preferred(mode);
+                smithay::desktop::layer_map_for_output(&output).arrange();
                 state.queue_redraw();
             }
             WinitEvent::Input(event) => state.process_input_event(event),

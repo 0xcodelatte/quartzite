@@ -2,6 +2,7 @@
 //! traits for one protocol family; small ones live here.
 
 mod compositor;
+mod layer_shell;
 mod xdg_shell;
 
 use smithay::{

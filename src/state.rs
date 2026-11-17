@@ -3,7 +3,7 @@
 use std::{ffi::OsString, sync::Arc, time::Instant};
 
 use smithay::{
-    desktop::{PopupManager, Window, WindowSurfaceType},
+    desktop::{layer_map_for_output, PopupManager, Window, WindowSurfaceType},
     input::{Seat, SeatState},
     output::Output,
     reexports::{
@@ -20,7 +20,7 @@ use smithay::{
         output::OutputManagerState,
         dmabuf::{DmabufGlobal, DmabufState},
         selection::data_device::DataDeviceState,
-        shell::xdg::XdgShellState,
+        shell::{wlr_layer::{Layer, WlrLayerShellState}, xdg::XdgShellState},
         shm::ShmState,
         socket::ListeningSocketSource,
     },
@@ -44,6 +44,7 @@ pub struct State {
     // Smithay protocol state
     pub compositor_state: CompositorState,
     pub xdg_shell_state: XdgShellState,
+    pub layer_shell_state: WlrLayerShellState,
     pub shm_state: ShmState,
     pub output_manager_state: OutputManagerState,
     pub seat_state: SeatState<State>,
@@ -70,6 +71,7 @@ impl State {
 
         let compositor_state = CompositorState::new::<Self>(&dh);
         let xdg_shell_state = XdgShellState::new::<Self>(&dh);
+        let layer_shell_state = WlrLayerShellState::new::<Self>(&dh);
         let shm_state = ShmState::new::<Self>(&dh, vec![]);
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&dh);
         let data_device_state = DataDeviceState::new::<Self>(&dh);
@@ -93,6 +95,7 @@ impl State {
             draw_cursor: false,
             compositor_state,
             xdg_shell_state,
+            layer_shell_state,
             shm_state,
             output_manager_state,
             seat_state,
@@ -164,6 +167,7 @@ impl State {
 
     pub fn add_output(&mut self, output: Output) {
         self.layout.add_output(&output);
+        layer_map_for_output(&output).arrange();
         self.queue_redraw();
     }
 
@@ -174,6 +178,20 @@ impl State {
     ) -> Option<(WlSurface, Point<f64, Logical>)> {
         if self.layout.expose_active() {
             return None;
+        }
+        // Panels and the menu bar sit above windows.
+        if let Some(output) = self.layout.primary_output() {
+            let origin = self.layout.primary_output_geometry().map(|g| g.loc).unwrap_or_default().to_f64();
+            let map = layer_map_for_output(output);
+            for layer in [Layer::Overlay, Layer::Top] {
+                if let Some(ls) = map.layer_under(layer, pos - origin) {
+                    let lgeo = map.layer_geometry(ls).unwrap_or_default();
+                    let local = pos - origin - lgeo.loc.to_f64();
+                    if let Some((s, p)) = ls.surface_under(local, WindowSurfaceType::ALL) {
+                        return Some((s, (p + lgeo.loc).to_f64() + origin));
+                    }
+                }
+            }
         }
         let space = &self.layout.active().space;
         space.element_under(pos).and_then(|(window, location)| {
