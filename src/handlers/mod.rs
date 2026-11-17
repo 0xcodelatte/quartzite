@@ -5,10 +5,12 @@ mod compositor;
 mod xdg_shell;
 
 use smithay::{
-    delegate_data_device, delegate_output, delegate_seat,
+    backend::{allocator::dmabuf::Dmabuf, renderer::ImportDma},
+    delegate_data_device, delegate_dmabuf, delegate_output, delegate_seat,
     input::{pointer::CursorImageStatus, Seat, SeatHandler, SeatState},
     reexports::wayland_server::{protocol::wl_surface::WlSurface, Resource},
     wayland::{
+        dmabuf::{DmabufGlobal, DmabufHandler, DmabufState, ImportNotifier},
         output::OutputHandler,
         selection::{
             data_device::{
@@ -31,7 +33,10 @@ impl SeatHandler for State {
         &mut self.seat_state
     }
 
-    fn cursor_image(&mut self, _seat: &Seat<Self>, _image: CursorImageStatus) {}
+    fn cursor_image(&mut self, _seat: &Seat<Self>, image: CursorImageStatus) {
+        self.render_state.cursor.status = image;
+        self.queue_redraw();
+    }
 
     fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&WlSurface>) {
         let dh = &self.display_handle;
@@ -56,3 +61,23 @@ delegate_data_device!(State);
 
 impl OutputHandler for State {}
 delegate_output!(State);
+
+impl DmabufHandler for State {
+    fn dmabuf_state(&mut self) -> &mut DmabufState {
+        &mut self.dmabuf_state
+    }
+
+    fn dmabuf_imported(&mut self, _global: &DmabufGlobal, dmabuf: Dmabuf, notifier: ImportNotifier) {
+        let imported = self
+            .backend
+            .renderer()
+            .map(|r| r.import_dmabuf(&dmabuf, None).is_ok())
+            .unwrap_or(false);
+        if imported {
+            let _ = notifier.successful::<State>();
+        } else {
+            notifier.failed();
+        }
+    }
+}
+delegate_dmabuf!(State);

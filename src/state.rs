@@ -18,6 +18,7 @@ use smithay::{
     wayland::{
         compositor::{CompositorClientState, CompositorState},
         output::OutputManagerState,
+        dmabuf::{DmabufGlobal, DmabufState},
         selection::data_device::DataDeviceState,
         shell::xdg::XdgShellState,
         shm::ShmState,
@@ -25,7 +26,7 @@ use smithay::{
     },
 };
 
-use crate::{backend::Backend, input::CmdKey, layout::Layout};
+use crate::{backend::Backend, input::CmdKey, layout::Layout, render::RenderState};
 
 pub struct State {
     pub start_time: Instant,
@@ -36,6 +37,9 @@ pub struct State {
 
     pub backend: Backend,
     pub layout: Layout,
+    pub render_state: RenderState,
+    /// Draw our own cursor (DRM). Nested, the host draws it.
+    pub draw_cursor: bool,
 
     // Smithay protocol state
     pub compositor_state: CompositorState,
@@ -44,6 +48,8 @@ pub struct State {
     pub output_manager_state: OutputManagerState,
     pub seat_state: SeatState<State>,
     pub data_device_state: DataDeviceState,
+    pub dmabuf_state: DmabufState,
+    pub dmabuf_global: Option<DmabufGlobal>,
     pub popups: PopupManager,
     pub seat: Seat<State>,
 
@@ -81,12 +87,16 @@ impl State {
             loop_signal: event_loop.get_signal(),
             backend: Backend::None,
             layout: Layout::new(),
+            render_state: RenderState::new(),
+            draw_cursor: false,
             compositor_state,
             xdg_shell_state,
             shm_state,
             output_manager_state,
             seat_state,
             data_device_state,
+            dmabuf_state: DmabufState::new(),
+            dmabuf_global: None,
             popups: PopupManager::default(),
             seat,
             redraw_needed: true,
@@ -133,8 +143,16 @@ impl State {
         self.popups.cleanup();
         let _ = self.display_handle.flush_clients();
         if self.redraw_needed {
-            self.backend.schedule_render();
+            self.render_if_needed();
         }
+    }
+
+    /// Advertise linux-dmabuf so GPU-rendering clients can share buffers
+    /// with us without copies.
+    pub fn init_dmabuf(&mut self, formats: impl IntoIterator<Item = smithay::backend::allocator::Format>) {
+        let formats: Vec<_> = formats.into_iter().collect();
+        let global = self.dmabuf_state.create_global::<State>(&self.display_handle, formats);
+        self.dmabuf_global = Some(global);
     }
 
     pub fn queue_redraw(&mut self) {

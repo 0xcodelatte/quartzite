@@ -12,6 +12,7 @@ mod backend;
 mod handlers;
 mod input;
 mod layout;
+mod platform;
 mod render;
 mod state;
 
@@ -28,7 +29,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let display: Display<State> = Display::new()?;
 
     let mut state = State::new(&mut event_loop, display)?;
-    backend::winit::init(&mut event_loop, &mut state)?;
+
+    // Nested when started from inside another session, unless --tty is given.
+    let force_tty = std::env::args().any(|a| a == "--tty");
+    let nested = !force_tty
+        && (std::env::var_os("WAYLAND_DISPLAY").is_some() || std::env::var_os("DISPLAY").is_some());
+    state.cmd_key = input::CmdKey::from_env(nested);
+    if nested {
+        backend::winit::init(&mut event_loop, &mut state)?;
+    } else {
+        #[cfg(feature = "udev")]
+        backend::udev::init(&mut event_loop, &mut state)?;
+        #[cfg(not(feature = "udev"))]
+        return Err("built without the `udev` feature; run nested inside a session".into());
+    }
+    // Clients we spawn must talk to us, not to the host compositor.
+    std::env::set_var("WAYLAND_DISPLAY", &state.socket_name);
 
     // Optional startup client: `quartzite -c foot`.
     let mut args = std::env::args().skip(1);

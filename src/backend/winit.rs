@@ -3,7 +3,7 @@
 
 use smithay::{
     backend::{
-        renderer::{damage::OutputDamageTracker, gles::GlesRenderer},
+        renderer::{damage::OutputDamageTracker, gles::GlesRenderer, ImportDma},
         winit::{self, WinitEvent, WinitGraphicsBackend},
     },
     output::{Mode, Output, PhysicalProperties, Subpixel},
@@ -23,7 +23,7 @@ pub fn init(
     event_loop: &mut EventLoop<'static, State>,
     state: &mut State,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let (backend, winit_loop) = winit::init::<GlesRenderer>()?;
+    let (mut backend, winit_loop) = winit::init::<GlesRenderer>()?;
 
     let mode = Mode {
         size: backend.window_size(),
@@ -44,6 +44,8 @@ pub fn init(
     output.set_preferred(mode);
 
     let damage_tracker = OutputDamageTracker::from_output(&output);
+    let formats = backend.renderer().dmabuf_formats();
+    state.init_dmabuf(formats);
     state.backend = Backend::Winit(WinitData {
         backend,
         output: output.clone(),
@@ -70,7 +72,7 @@ pub fn init(
 }
 
 fn render_frame(state: &mut State) {
-    let State { backend, layout, .. } = state;
+    let State { backend, layout, render_state, .. } = state;
     let Backend::Winit(data) = backend else { return };
     let output = data.output.clone();
 
@@ -83,7 +85,7 @@ fn render_frame(state: &mut State) {
                 return;
             }
         };
-        let elements = render::output_elements(renderer, layout, &data.output);
+        let elements = render::output_elements(renderer, render_state, layout, &data.output, None);
         match data.damage_tracker.render_output(
             renderer,
             &mut framebuffer,

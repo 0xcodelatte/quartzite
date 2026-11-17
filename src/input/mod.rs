@@ -26,6 +26,8 @@ pub enum Action {
     CloseWindow,
     ToggleMaximize,
     Spawn(String),
+    /// Ctrl+Alt+Fn on a TTY.
+    ChangeVt(i32),
 }
 
 /// Which physical modifier plays the role of macOS's ⌘ key.
@@ -58,6 +60,11 @@ impl CmdKey {
 fn binding(cmd: CmdKey, mods: &ModifiersState, sym: Keysym) -> Option<Action> {
     if mods.ctrl && mods.alt && sym == Keysym::BackSpace {
         return Some(Action::Quit);
+    }
+    // xkb turns Ctrl+Alt+F1..F12 into XF86Switch_VT_1..12.
+    let vt = sym.raw().wrapping_sub(Keysym::XF86_Switch_VT_1.raw());
+    if vt < 12 {
+        return Some(Action::ChangeVt(vt as i32 + 1));
     }
     if cmd.held(mods) {
         let terminal = std::env::var("TERMINAL").unwrap_or_else(|_| "foot".into());
@@ -180,6 +187,10 @@ impl State {
         match action {
             Action::Quit => self.loop_signal.stop(),
             Action::Spawn(cmd) => self.spawn(&cmd),
+            #[cfg(feature = "udev")]
+            Action::ChangeVt(vt) => self.change_vt(vt),
+            #[cfg(not(feature = "udev"))]
+            Action::ChangeVt(_) => {}
             Action::CloseWindow => {
                 if let Some(toplevel) = self.focused_window().and_then(|w| w.toplevel().cloned()) {
                     toplevel.send_close();
